@@ -18,7 +18,7 @@ def compute_perplexity(
     tokenizer: AutoTokenizer,
     documents: list[str],
     batch_size: int,
-) -> float: # Corrected return type hint
+) -> float:
     """Computes perplexity given a list of documents
 
     Args:
@@ -63,9 +63,6 @@ def compute_perplexity(
 
 
 def main():
-    wandb.init(project="text-generation-perplexity", job_type="evaluation") # Initialize wandb run
-    enable_tf32()
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--documents",
@@ -81,8 +78,13 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Initialize wandb run with arguments as config
+    wandb.init(project="text-generation-perplexity", job_type="evaluation", config=args)
+    enable_tf32()
+
     with open(args.documents) as f:
-        documents = [json.loads(line)["document"] for line in f]
+        documents = [json.loads(line)["text"] for line in f] # Assuming 'text' is the correct key based on inspection, if not, further inspection is needed.
     batch_size = args.batch_size
     device = determine_device()
 
@@ -103,7 +105,7 @@ def main():
     wandb.log({"perplexity": perplexity})
 
     print("done!")
-    wandb.finish() # Finish wandb run
+    wandb.finish()
 
 
 if __name__ == "__main__":
