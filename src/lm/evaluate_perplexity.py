@@ -9,7 +9,7 @@ from tqdm import trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from lm.utils import determine_device, enable_tf32
 from lm.use_pythia import initialize_pythia
-import wandb # Added wandb import
+
 
 @torch.inference_mode()
 def compute_perplexity(
@@ -18,7 +18,7 @@ def compute_perplexity(
     tokenizer: AutoTokenizer,
     documents: list[str],
     batch_size: int,
-) -> float:
+) -> list[str]:
     """Computes perplexity given a list of documents
 
     Args:
@@ -63,6 +63,8 @@ def compute_perplexity(
 
 
 def main():
+    enable_tf32()
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--documents",
@@ -78,13 +80,8 @@ def main():
     )
 
     args = parser.parse_args()
-
-    # Initialize wandb run with arguments as config
-    wandb.init(project="text-generation-perplexity", job_type="evaluation", config=args)
-    enable_tf32()
-
     with open(args.documents) as f:
-        documents = [json.loads(line)["text"] for line in f] # Assuming 'text' is the correct key based on inspection, if not, further inspection is needed.
+        documents = [json.loads(line)["document"] for line in f]
     batch_size = args.batch_size
     device = determine_device()
 
@@ -94,18 +91,14 @@ def main():
 
     # generate and save outputs
     model.eval()
-    perplexity = compute_perplexity(
+    compute_perplexity(
         model,
         device,
         tokenizer,
         documents,
         batch_size,
     )
-    # Log perplexity to wandb
-    wandb.log({"perplexity": perplexity})
-
     print("done!")
-    wandb.finish()
 
 
 if __name__ == "__main__":
