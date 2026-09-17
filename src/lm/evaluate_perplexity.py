@@ -1,4 +1,3 @@
-%%writefile src/lm/evaluate_perplexity.py
 import argparse
 import json
 import math
