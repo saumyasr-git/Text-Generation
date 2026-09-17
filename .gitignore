@@ -167,7 +167,6 @@ data/*
 !data/hidden.npy
 !data/docs.jsonl
 !data/make_ppl_example_jsonl.py
-outputs/
 wandb/
 slurm*
 .ruff_cache/
