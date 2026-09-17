@@ -1,65 +1,53 @@
 import argparse
 import json
-import math
-from einops import rearrange
+import os
 
 import torch
-import torch.nn.functional as F
-from tqdm import trange
+import wandb
+from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
 from lm.utils import determine_device, enable_tf32
-from lm.use_pythia import initialize_pythia
+
+
+def initialize_model(model_name: str, device: str):
+    """Initialize tokenizer and model for perplexity calculation."""
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+    return tokenizer, model
 
 
 @torch.inference_mode()
-def compute_perplexity(
-    model: AutoModelForCausalLM,
-    device: str,
-    tokenizer: AutoTokenizer,
-    documents: list[str],
-    batch_size: int,
-) -> list[str]:
-    """Computes perplexity given a list of documents
-
-    Args:
-        model: the language model
-        device: device to put the tensors on
-        tokenizer: the tokenizer
-        documents: a list of document strings
-        batch_size: number of documents to batch together during generation
-
-    Returns:
-        perplexity: a floating point number
-    """
-
-    total_loss = 0.0
+def calculate_perplexity(model, device, tokenizer, documents: list[str], batch_size: int):
+    """Calculate perplexity for a list of documents."""
+    total_nll = 0
     total_tokens = 0
 
-    # do batched generation
-    for i in trange(0, len(documents), batch_size):
-        # tokenize the prefixes
-        batch_docs = documents[i : i + batch_size]
-        tokenized_docs = tokenizer(batch_docs, return_tensors="pt", padding=True)
+    for i in tqdm(range(0, len(documents), batch_size), desc="Calculating Perplexity"):
+        batch = documents[i : i + batch_size]
+        # Tokenize documents and move to device
+        tokenized_batch = tokenizer(batch, return_tensors='pt', padding=True, truncation=True).to(device)
+        input_ids = tokenized_batch.input_ids
+        attention_mask = tokenized_batch.attention_mask
 
-        iids = tokenized_docs["input_ids"].to(device)
-        mask = tokenized_docs["attention_mask"].to(device)
+        # Get model outputs
+        outputs = model(input_ids, attention_mask=attention_mask, labels=input_ids)
+        loss = outputs.loss
 
-        logits = model(input_ids=iids, attention_mask=mask).logits
+        # Calculate NLL (Negative Log Likelihood)
+        # We need to consider the actual number of non-padded tokens for accurate perplexity
+        active_loss = attention_mask.view(-1) == 1
+        total_nll += loss.item() * torch.sum(active_loss).item()
+        total_tokens += torch.sum(active_loss).item()
 
-        labels_flat = rearrange(iids[:, 1:], "B S -> (B S)")
-        mask_flat = rearrange(mask[:, 1:], "B S -> (B S)")
-        logits_flat = rearrange(logits[:, :-1], "B S D -> (B S) D")
+    # Perplexity is exp(average negative log likelihood)
+    if total_tokens > 0:
+        perplexity = torch.exp(torch.tensor(total_nll / total_tokens)).item()
+    else:
+        perplexity = float('inf')  # Handle case with no tokens
 
-        loss_flat = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-        total_loss += (loss_flat * mask_flat).sum().item()
-        total_tokens += mask_flat.sum().item()
-
-    # compute perplexity
-    avg_loss = total_loss / total_tokens
-    ppl = math.exp(avg_loss)
-    print(f"Perplexity: {ppl}")
-
-    return ppl
+    return perplexity
 
 
 def main():
@@ -70,35 +58,52 @@ def main():
         "--documents",
         type=str,
         required=True,
-        help="a jsonl file with a list of strings as documents for perplexity calculation. See data/prefixes.jsonl for an example.",
+        help="A jsonl file with a list of documents (strings) to evaluate perplexity on."
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=2,
-        help="number of prefixes to batch together during generation",
+        help="Number of documents to batch together during perplexity calculation."
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gpt2", # Default to a common model, can be overridden
+        help="The name of the model to use for perplexity calculation (e.g., 'gpt2', 'EleutherAI/pythia-1.4b')."
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to run the model on (e.g., 'cuda', 'cpu'). If None, determined automatically."
     )
 
     args = parser.parse_args()
+
+    # Initialize wandb
+    wandb.init(project="text-generation-perplexity", config=args)
+
     with open(args.documents) as f:
-        documents = [json.loads(line)["document"] for line in f]
+        # CHANGE: Read 'generation' key instead of 'document'
+        documents = [json.loads(line)["generation"] for line in f]
+
     batch_size = args.batch_size
-    device = determine_device()
+    model_name = args.model
+    device = args.device if args.device else determine_device()
 
-    # initialize pythia tokenizer and model
-    model_name = "EleutherAI/pythia-1.4b"
-    tokenizer, model = initialize_pythia(model_name, device)
+    tokenizer, model = initialize_model(model_name, device)
 
-    # generate and save outputs
     model.eval()
-    compute_perplexity(
-        model,
-        device,
-        tokenizer,
-        documents,
-        batch_size,
-    )
+    perplexity = calculate_perplexity(model, device, tokenizer, documents, batch_size)
+
+    print(f"Perplexity: {perplexity}")
+
+    # Log perplexity to wandb
+    wandb.log({"perplexity": perplexity})
+
     print("done!")
+    wandb.finish()
 
 
 if __name__ == "__main__":
