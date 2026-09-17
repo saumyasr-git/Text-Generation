@@ -126,6 +126,9 @@ def main():
     parser.add_argument(
         "--temperature", type=float, default=0.1, help="temperature in sampling"
     )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="random seed for reproducible sampling"
+    )
 
     args = parser.parse_args()
     config = args.config
@@ -133,6 +136,9 @@ def main():
         prefixes = [json.loads(line)["prefix"] for line in f]
     max_new_tokens = args.max_new_tokens
     temperature = args.temperature
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     # initialize tokenizer and model
     model_path = os.path.join(config.output_dir, "model.pt")
