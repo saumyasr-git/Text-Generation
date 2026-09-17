@@ -66,7 +66,8 @@ def generate(
     [tokenizer.eot_token] * (longest_prefix_len - len(ids)) + ids
     for ids in token_ids
 ]
-    losses=[]
+    losses = []
+    generations = []
     for start in range(0, len(padded_token_ids), batch_size):
         end = start + batch_size
 
@@ -77,7 +78,6 @@ def generate(
         attention_mask = torch.tensor([
                     [0.0] * (longest_prefix_len - len(ids)) + [1.0] * len(ids)
                     for ids in original_batch_token_ids], device=device)
-        batch_prefixes = prefixes[start:end]
         for _ in trange(max_new_tokens):
             logits = model(batch_token_ids_tensor, attention_mask)  
             next_token_logits = logits[:, -1, :]
@@ -86,13 +86,10 @@ def generate(
             batch_token_ids_tensor = torch.cat([batch_token_ids_tensor, next_token_ids], dim=1)
             attention_mask = torch.cat([attention_mask, torch.ones((attention_mask.size(0), 1), device=device)], dim=1)
         generated_token_ids = batch_token_ids_tensor[:, longest_prefix_len:].tolist()
-        loss = compute_language_modeling_loss(token_ids, logits)
+        generations.extend(tokenizer.decode(ids) for ids in generated_token_ids)
+        final_logits = model(batch_token_ids_tensor, attention_mask)
+        loss = compute_language_modeling_loss(batch_token_ids_tensor, final_logits)
         losses.append(loss.item())
-
-    # Process this batch through the model.
-    generations = [tokenizer.decode(ids) for ids in generated_token_ids]
-
-    
 
     # mean of the losses is the average negative log likelihood
     mean_loss = sum(losses) / len(losses)
