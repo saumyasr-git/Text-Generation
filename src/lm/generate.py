@@ -66,7 +66,8 @@ def generate(
     [tokenizer.eot_token] * (longest_prefix_len - len(ids)) + ids
     for ids in token_ids
 ]
-    losses = []
+    total_nll = 0.0
+    total_generated_tokens = 0
     generations = []
     for start in range(0, len(padded_token_ids), batch_size):
         end = start + batch_size
@@ -81,18 +82,18 @@ def generate(
         for _ in trange(max_new_tokens):
             logits = model(batch_token_ids_tensor, attention_mask)  
             next_token_logits = logits[:, -1, :]
+            log_probabilities = torch.log_softmax(next_token_logits, dim=-1)
             probabilities = softmax_with_temperature(next_token_logits, temperature)
             next_token_ids = torch.multinomial(probabilities, num_samples=1)
+            total_nll += -log_probabilities.gather(1, next_token_ids).sum().item()
+            total_generated_tokens += next_token_ids.numel()
             batch_token_ids_tensor = torch.cat([batch_token_ids_tensor, next_token_ids], dim=1)
             attention_mask = torch.cat([attention_mask, torch.ones((attention_mask.size(0), 1), device=device)], dim=1)
         generated_token_ids = batch_token_ids_tensor[:, longest_prefix_len:].tolist()
         generations.extend(tokenizer.decode(ids) for ids in generated_token_ids)
-        final_logits = model(batch_token_ids_tensor, attention_mask)
-        loss = compute_language_modeling_loss(batch_token_ids_tensor, final_logits)
-        losses.append(loss.item())
 
     # mean of the losses is the average negative log likelihood
-    mean_loss = sum(losses) / len(losses)
+    mean_loss = total_nll / total_generated_tokens
     perplexity = math.exp(mean_loss)
     
 
