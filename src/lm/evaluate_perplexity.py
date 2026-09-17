@@ -1,3 +1,4 @@
+%%writefile src/lm/evaluate_perplexity.py
 import argparse
 import json
 import math
@@ -9,7 +10,7 @@ from tqdm import trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from lm.utils import determine_device, enable_tf32
 from lm.use_pythia import initialize_pythia
-
+import wandb # Added wandb import
 
 @torch.inference_mode()
 def compute_perplexity(
@@ -18,7 +19,7 @@ def compute_perplexity(
     tokenizer: AutoTokenizer,
     documents: list[str],
     batch_size: int,
-) -> list[str]:
+) -> float: # Corrected return type hint
     """Computes perplexity given a list of documents
 
     Args:
@@ -63,6 +64,7 @@ def compute_perplexity(
 
 
 def main():
+    wandb.init(project="text-generation-perplexity", job_type="evaluation") # Initialize wandb run
     enable_tf32()
 
     parser = argparse.ArgumentParser()
@@ -91,14 +93,18 @@ def main():
 
     # generate and save outputs
     model.eval()
-    compute_perplexity(
+    perplexity = compute_perplexity(
         model,
         device,
         tokenizer,
         documents,
         batch_size,
     )
+    # Log perplexity to wandb
+    wandb.log({"perplexity": perplexity})
+
     print("done!")
+    wandb.finish() # Finish wandb run
 
 
 if __name__ == "__main__":
