@@ -1,16 +1,3 @@
-import argparse
-import json
-import math
-from einops import rearrange
-
-import torch
-import torch.nn.functional as F
-from tqdm import trange
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from lm.utils import determine_device, enable_tf32
-from lm.use_pythia import initialize_pythia
-
-
 @torch.inference_mode()
 def compute_perplexity(
     model: AutoModelForCausalLM,
@@ -18,26 +5,23 @@ def compute_perplexity(
     tokenizer: AutoTokenizer,
     documents: list[str],
     batch_size: int,
-) -> list[str]:
-    """Computes perplexity given a list of documents
+) -> list[float]:
+    """Computes perplexity per document given a list of documents.
 
     Args:
         model: the language model
         device: device to put the tensors on
         tokenizer: the tokenizer
         documents: a list of document strings
-        batch_size: number of documents to batch together during generation
+        batch_size: number of documents to batch together during evaluation
 
     Returns:
-        perplexity: a floating point number
+        perplexities: a list of floating point perplexity values for each document
     """
+    perplexities = []
 
-    total_loss = 0.0
-    total_tokens = 0
-
-    # do batched generation
+    # Process batch by batch
     for i in trange(0, len(documents), batch_size):
-        # tokenize the prefixes
         batch_docs = documents[i : i + batch_size]
         tokenized_docs = tokenizer(batch_docs, return_tensors="pt", padding=True)
 
@@ -46,60 +30,27 @@ def compute_perplexity(
 
         logits = model(input_ids=iids, attention_mask=mask).logits
 
-        labels_flat = rearrange(iids[:, 1:], "B S -> (B S)")
-        mask_flat = rearrange(mask[:, 1:], "B S -> (B S)")
-        logits_flat = rearrange(logits[:, :-1], "B S D -> (B S) D")
+        # Shift sequence for standard autoregressive language modeling targets
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = iids[:, 1:].contiguous()
+        shift_mask = mask[:, 1:].contiguous()
 
-        loss_flat = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-        total_loss += (loss_flat * mask_flat).sum().item()
-        total_tokens += mask_flat.sum().item()
+        # Compute unreduced cross-entropy loss per token
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            reduction="none",
+        ).view(shift_labels.size())
 
-    # compute perplexity
-    avg_loss = total_loss / total_tokens
-    ppl = math.exp(avg_loss)
-    print(f"Perplexity: {ppl}")
+        # Compute loss and perplexity per document row in the batch
+        doc_losses = (loss * shift_mask).sum(dim=1)
+        doc_tokens = shift_mask.sum(dim=1)
 
-    return ppl
+        for doc_idx, (d_loss, d_tokens) in enumerate(zip(doc_losses, doc_tokens)):
+            global_doc_num = i + doc_idx + 1
+            avg_doc_loss = (d_loss / d_tokens).item()
+            doc_ppl = math.exp(avg_doc_loss)
+            perplexities.append(doc_ppl)
+            print(f"Document {global_doc_num} Perplexity: {doc_ppl:.4f}")
 
-
-def main():
-    enable_tf32()
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--documents",
-        type=str,
-        required=True,
-        help="a jsonl file with a list of strings as documents for perplexity calculation. See data/prefixes.jsonl for an example.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=2,
-        help="number of prefixes to batch together during generation",
-    )
-
-    args = parser.parse_args()
-    with open(args.documents) as f:
-        documents = [json.loads(line)["document"] for line in f]
-    batch_size = args.batch_size
-    device = determine_device()
-
-    # initialize pythia tokenizer and model
-    model_name = "EleutherAI/pythia-1.4b"
-    tokenizer, model = initialize_pythia(model_name, device)
-
-    # generate and save outputs
-    model.eval()
-    compute_perplexity(
-        model,
-        device,
-        tokenizer,
-        documents,
-        batch_size,
-    )
-    print("done!")
-
-
-if __name__ == "__main__":
-    main()
+    return perplexities
