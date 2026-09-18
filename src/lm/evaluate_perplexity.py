@@ -86,7 +86,7 @@ def main():
 
     with open(args.documents) as f:
         # CHANGE: Read 'generation' key instead of 'document'
-        documents = [json.loads(line)["generation"] for line in f]
+        documents = [json.loads(line)["document"] for line in f]
 
     batch_size = args.batch_size
     model_name = args.model
